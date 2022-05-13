@@ -84,11 +84,52 @@ programCommand('batch_token_drop')
         let errors = new Map<String, number>();
         for (let holder of holdersJson) {
             let result = await transferToken(connection, walletKeyPair, walletKeyPair.publicKey.toString(), holder[0], mint, holder[1]);
-            if (!result){
+            if (!result) {
                 errors.set(holder[0], holder[1]);
             }
             writeFileSync(errorFile, JSON.stringify(Array.from(errors.entries()), null, 2));
         }
+    });
+
+programCommand('verify_token_amounts')
+    .option('-u, --counts <string>', 'Holder counts file (see snapshot_to_count)')
+    .option('-m, --mint <string>', 'The token mint to transfer')
+    .option('-f, --errorFile <string>', 'The output file to write errors to')
+    .action(async (directory, cmd) => {
+        const { keypair, env, rpc, counts, mint, errorFile } = cmd.opts();
+        const walletKeyPair = loadWalletKey(keypair);
+        let connection;
+        if (rpc !== "") {
+            connection = new web3.Connection(rpc, { confirmTransactionInitialTimeout: 60000 });
+        }
+        else {
+            connection = new web3.Connection(web3.clusterApiUrl(env));
+        }
+
+        let holdersJson = JSON.parse(readFileSync(counts).toString());
+
+        let errors = new Map<String, number>();
+        for (let holder of holdersJson) {
+            //let result = await transferToken(connection, walletKeyPair, walletKeyPair.publicKey.toString(), holder[0], mint, holder[1]);
+            //if (!result) {
+            //    errors.set(holder[0], holder[1]);
+            //}
+            let atas = await connection.getTokenAccountsByOwner(new PublicKey(holder[0]), {mint: new PublicKey(mint)});
+            //console.log(atas.value[0]);
+            if (atas.value[0] !== undefined) {
+                let ai = await connection.getParsedAccountInfo(atas.value[0].pubkey);
+                console.log("%s: %s", holder[0], ai.value.data.parsed.info.tokenAmount.amount);
+                if (ai.value.data.parsed.info.tokenAmount.amount === '0') {
+                    errors.set(holder[0], holder[1]);
+                }
+            }
+            else{
+                errors.set(holder[0], holder[1]);
+            }
+        }
+        console.log(errors);
+
+        writeFileSync(errorFile, JSON.stringify(Array.from(errors.entries()), null, 2));
     });
 
 programCommand('snapshot_amount')
