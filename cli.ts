@@ -20,10 +20,10 @@ programCommand('batch_drop')
         const walletKeyPair = loadWalletKey(keypair);
         let connection;
         if (rpc !== "") {
-            connection = new web3.Connection(rpc, { confirmTransactionInitialTimeout: 60000 });
+            connection = new web3.Connection(rpc, { confirmTransactionInitialTimeout: 120000 });
         }
         else {
-            connection = new web3.Connection(web3.clusterApiUrl(env));
+            connection = new web3.Connection(web3.clusterApiUrl(env), { confirmTransactionInitialTimeout: 120000 });
         }
 
         //console.log(holders);
@@ -73,10 +73,10 @@ programCommand('batch_token_drop')
         const walletKeyPair = loadWalletKey(keypair);
         let connection;
         if (rpc !== "") {
-            connection = new web3.Connection(rpc, { confirmTransactionInitialTimeout: 60000 });
+            connection = new web3.Connection(rpc, { confirmTransactionInitialTimeout: 360000 });
         }
         else {
-            connection = new web3.Connection(web3.clusterApiUrl(env));
+            connection = new web3.Connection(web3.clusterApiUrl(env), { confirmTransactionInitialTimeout: 360000 });
         }
 
         let holdersJson = JSON.parse(readFileSync(counts).toString());
@@ -114,7 +114,7 @@ programCommand('verify_token_amounts')
             //if (!result) {
             //    errors.set(holder[0], holder[1]);
             //}
-            let atas = await connection.getTokenAccountsByOwner(new PublicKey(holder[0]), {mint: new PublicKey(mint)});
+            let atas = await connection.getTokenAccountsByOwner(new PublicKey(holder[0]), { mint: new PublicKey(mint) });
             //console.log(atas.value[0]);
             if (atas.value[0] !== undefined) {
                 let ai = await connection.getParsedAccountInfo(atas.value[0].pubkey);
@@ -123,13 +123,36 @@ programCommand('verify_token_amounts')
                     errors.set(holder[0], holder[1]);
                 }
             }
-            else{
+            else {
                 errors.set(holder[0], holder[1]);
             }
         }
         console.log(errors);
 
         writeFileSync(errorFile, JSON.stringify(Array.from(errors.entries()), null, 2));
+    });
+
+programCommand('verify_txes')
+    .option('-u, --txFile <string>', 'Transactions file')
+    .action(async (directory, cmd) => {
+        const { keypair, env, rpc, txFile } = cmd.opts();
+        const walletKeyPair = loadWalletKey(keypair);
+        let connection;
+        if (rpc !== "") {
+            connection = new web3.Connection(rpc);
+        }
+        else {
+            connection = new web3.Connection(web3.clusterApiUrl(env));
+        }
+
+        //console.log(holders);
+        let txesJson = JSON.parse(readFileSync(txFile).toString());
+        for (let tx of txesJson){
+            let response = await connection.getTransaction(tx);
+            if (response === null){
+                console.log(tx);
+            }
+        }
     });
 
 programCommand('snapshot_amount')
@@ -146,18 +169,14 @@ programCommand('snapshot_amount')
             connection = new web3.Connection(web3.clusterApiUrl(env));
         }
 
-        //console.log(holders);
         let holdersJson = JSON.parse(readFileSync(holders).toString());
 
         let receivers: String[] = [];
         for (let holder of holdersJson) {
-            //console.log(holder.owner_wallet);
             if (holder.owner_wallet !== walletKeyPair.publicKey.toString()) {
                 receivers.push(holder.owner_wallet);
             }
         }
-        //console.log(receivers.length);
-        //console.log(receivers);
 
         let holderAmounts = new Map()
         for (let receiver of receivers) {
@@ -168,7 +187,6 @@ programCommand('snapshot_amount')
 
                 let count = 0;
                 for (let nft of holderNFTs) {
-                    //console.log(nft.data.creators);
                     if (nft.data.creators && nft.data.creators[0].address === filter && nft.data.creators[0].verified === 1) {
                         count++;
                     }
@@ -186,16 +204,6 @@ programCommand('snapshot_to_count')
     .option('-o, --out <string>', 'The output file to write the amounts to')
     .action(async (directory, cmd) => {
         const { keypair, env, rpc, holders, out } = cmd.opts();
-        // const walletKeyPair = loadWalletKey(keypair);
-        // let connection;
-        // if (rpc !== "") {
-        //     connection = new web3.Connection(rpc);
-        // }
-        // else {
-        //     connection = new web3.Connection(web3.clusterApiUrl(env));
-        // }
-
-        //console.log(holders);
         let holdersJson = JSON.parse(readFileSync(holders).toString());
 
         let receivers = new Map<String, number>();
@@ -361,12 +369,23 @@ async function transferToken(connection: web3.Connection, payer: web3.Signer, fr
     let tokenKey = new PublicKey(token);
 
     console.log("Transfering %d %s to %s", amount, tokenKey.toString(), toKey.toString());
+    let instructions: TransactionInstruction[] = [];
 
     try {
         let fromATA = await splToken.getAssociatedTokenAddress(tokenKey, fromKey);
-        let toATA = (await splToken.getOrCreateAssociatedTokenAccount(connection, payer, tokenKey, toKey)).address;
+        //let toATA = (await splToken.getOrCreateAssociatedTokenAccount(connection, payer, tokenKey, toKey)).address;
+        let toATA = await splToken.getAssociatedTokenAddress(tokenKey, toKey, false);
+        let toATAData = await connection.getAccountInfo(toATA);
+        if (toATAData === null) {
+            console.log("Creating token account for %s", to);
+            instructions.push(splToken.createAssociatedTokenAccountInstruction(payer.publicKey, toATA, toKey, tokenKey));
+        }
 
-        await splToken.transferChecked(connection, payer, fromATA, tokenKey, toATA, fromKey, amount, 0);
+        instructions.push(splToken.createTransferCheckedInstruction(fromATA, tokenKey, toATA, fromKey, amount, 0));
+        const tx: web3.Transaction = new web3.Transaction().add(
+            ...instructions);
+        //console.log(await connection.sendTransaction(tx, [payer]));
+        await web3.sendAndConfirmTransaction(connection, tx, [payer])
     }
     catch (e) {
         console.log(e);
